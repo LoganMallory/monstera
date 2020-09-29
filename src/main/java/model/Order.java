@@ -22,9 +22,8 @@ public class Order implements Comparable<Order> {
         this.id                = ((side >>> 31) ^ 1) + UUID.randomUUID().toString();
         this.symbol            = symbol;
         this.side              = side;
-        this.price             = price;
         this.remainingQuantity = quantity;
-        this.qprice            = this.side * this.price;
+        this.setPrice(price); //sets price, qprice, and checks for market order
     }
 
     public String getId() {
@@ -59,7 +58,7 @@ public class Order implements Comparable<Order> {
 
     public void setPrice(final long newPrice) {
         this.price  = newPrice;
-        this.qprice = this.price * this.side;
+        this.qprice = newPrice == 0 ? Integer.MAX_VALUE : this.price * this.side; //if market order, then price is INTMAX
     }
 
     public Order dcopy() {
