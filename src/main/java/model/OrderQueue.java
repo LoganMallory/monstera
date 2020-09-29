@@ -2,6 +2,7 @@ package model;
 
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 
 public class OrderQueue {
@@ -10,15 +11,15 @@ public class OrderQueue {
     private final HashMap<String, Integer> indexes;
     private int size;
     private long depth;
-    private double avgPrice; //prices are in long format (hundredths of a cent), but average should be double
+    private double avgPrice; //prices are in long format, but average should be double
 
     public OrderQueue(int capacity) {
         if(DEBUG) System.out.println("OrderQueue(" + capacity + ")");
-        this.heap     = new Order[capacity];
-        this.indexes  = new HashMap<String, Integer>(capacity, 1.0f);
-        this.size     = 0;
-        this.depth    = 0;
-        this.avgPrice = 0;
+        this.heap            = new Order[capacity];
+        this.indexes         = new HashMap<String, Integer>(capacity, 1.0f);
+        this.size            = 0;
+        this.depth           = 0;
+        this.avgPrice        = 0;
     }
 
     public int getSize() {
@@ -29,17 +30,22 @@ public class OrderQueue {
         return this.heap.length;
     }
 
-    public double fillOrder(final Order incomingOrder) {
-        //TODO: handle market orders
+    public double fillOrder(final Order incomingOrder, AtomicLong lastTradedPrice) {
         final long mprice                = incomingOrder.getQprice() * -1;  //multiply queue price by -1 to make price logic work for both bids & asks
         double avgFillPrice              = 0;
         long incomingQuantityFilledSoFar = 0;
 
         Order bestOffer = this.heap[0];                      //grab reference to best offer (null if heap is empty)
-        // while incoming order still has quantity left to fill and price point works with best offer
+        // while incoming order still has quantity left to fill and price point works with best offer, and orders are not both market orders
         while(incomingOrder.getRemainingQuantity() > 0 && this.size > 0 && bestOffer.getQprice() >= mprice) {
+            if(((bestOffer.getQprice() - incomingOrder.getQprice()) == 0) && lastTradedPrice.get() < 0) return 0; //both orders are market orders and no last trade price exists
             long incomingQuantityFilledOnIteration = this.fillRootOffer(incomingOrder.getRemainingQuantity());   //fill order and return quantity filled, update average fill price
-            avgFillPrice = (avgFillPrice*incomingQuantityFilledSoFar + bestOffer.getPrice()*incomingQuantityFilledOnIteration) / (incomingQuantityFilledSoFar + incomingQuantityFilledOnIteration);
+
+            long x = bestOffer.getPrice();                          //else at least one order is a limit order so use that price
+            long y = incomingOrder.getPrice();
+            lastTradedPrice.set(x - ((x - y) & ((x - y) >> 31))); // max(x, y)
+
+            avgFillPrice = (avgFillPrice*incomingQuantityFilledSoFar + lastTradedPrice.get()*incomingQuantityFilledOnIteration) / (incomingQuantityFilledSoFar + incomingQuantityFilledOnIteration);
             incomingQuantityFilledSoFar += incomingQuantityFilledOnIteration;
             incomingOrder.addQuantity(incomingQuantityFilledOnIteration*-1); //update remaining quantity
             bestOffer = this.heap[0];                                //grab next best offer (could be same order, but then while loop will exit)
@@ -60,6 +66,7 @@ public class OrderQueue {
     }
 
     public void add(final Order order) {
+        //TODO: reject order if queue is full
         //TODO: in the case where new order has same price & quantity as existing order, existing order gets precedence (change sift down method comparison)
         if(DEBUG) System.out.println("add(" + order.toString() + ")");
         this.heap[this.size++] = order;                              //put new order in last leaf
@@ -73,6 +80,7 @@ public class OrderQueue {
         this.swap(i, --this.size);                                   //swap node with last leaf
         this.siftDown(i);                                            //heapify the tree
         final Order order = this.heap[this.size];
+        this.indexes.remove(order.getId());                          //remove order from indexes map
         this.updateMetrics(order.getPrice(), order.getRemainingQuantity()*-1);  //update average, decrease depth
 
     }
@@ -82,26 +90,6 @@ public class OrderQueue {
         final Integer idx = this.indexes.get(id);
         if(idx == null) return -1;
         this.remove(idx);
-        return 0;
-    }
-
-    public int update(final String id, final long newPrice, final long newQuantity) {
-        //TODO: order updates should actually remove and then add new order
-        //because order update should also trigger matching against other queue (which might mean order is filled)
-        if(DEBUG) System.out.println("update(" + id + ", " + newPrice + ", " + newQuantity + ")");
-        final Integer idx = this.indexes.get(id);                    //get index of order
-        if(idx == null) return -1;                                   //make sure its not null (order exists)
-        final Order order       = this.heap[idx];
-        final Order ogOrderCopy = order.dcopy();                     //make copy of original order for comparison later
-        order.setPrice(newPrice);                                    //set new price & quantity (& internally, qprice)
-        order.setQuantity(newQuantity);
-        final int comparison = order.compareTo(ogOrderCopy);         //compare new and original order
-        if (comparison >= 0) {                                       //new order is better (or the same possibly)
-            this.siftUp(idx);                                        //so sift up
-        } else {                                                     //else new order is worse
-            this.siftDown(idx);                                      //so sift down
-        }
-        this.updateMetrics(newPrice, newQuantity - ogOrderCopy.getRemainingQuantity()); //update average, update depth
         return 0;
     }
 
